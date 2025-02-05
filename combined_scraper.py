@@ -117,28 +117,15 @@ def get_file_path(url, output_folder):
 def save_page_with_inlining(browser, url, output_folder):
     """
     Opens the given URL in a Playwright page, inlines external resources (CSS and images),
-    bypasses cookie acceptance messages by auto-accepting or removing them,
     and then saves the resulting self-contained HTML to disk.
     """
     print(f"\nProcessing page: {url}")
     page = browser.new_page()
     try:
         page.goto(url, wait_until="networkidle")
-        # Inline external CSS, images, and handle cookie banners via an async IIFE.
+        # Inline external CSS and images via an async IIFE.
         inline_script = """
         (async () => {
-            // Attempt to auto-accept cookies.
-            const cookieSelectors = "#onetrust-accept-btn-handler, .cookie-accept, button.cookie-consent-accept, .cc-btn, .cookie-banner-accept";
-            const cookieBtn = document.querySelector(cookieSelectors);
-            if (cookieBtn) {
-                console.log("Found cookie acceptance button, clicking it.");
-                cookieBtn.click();
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-            // Remove any lingering cookie banners.
-            const banners = document.querySelectorAll("[id*='cookie'], [class*='cookie']");
-            banners.forEach(banner => banner.remove());
-            
             // Inline external CSS files.
             const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
             for (const link of links) {
@@ -174,9 +161,9 @@ def save_page_with_inlining(browser, url, output_folder):
             }
         })();
         """
-        print("Inlining external resources and handling cookie banners …")
+        print("Inlining external resources …")
         page.evaluate(inline_script)
-        # Give a moment for the script to finish its tasks.
+        # Give a moment for inlining to finish.
         time.sleep(1)
         content = page.content()
         file_path = get_file_path(url, output_folder)
