@@ -87,38 +87,58 @@ def parse_sitemap(sitemap_url):
 
     return urls
 
-def get_file_path(url, output_dir):
+def get_file_path(url, output_folder):
     """
-    Convert a URL into a file path under output_dir that mirrors the URL structure.
+    Convert a URL into a file name and return the full path under output_folder.
+    All files are saved in the same folder. The file name is derived by combining the domain
+    (with dots replaced by underscores) and the URL path (with slashes replaced by underscores).
+    
     Examples:
-      - https://example.com/         -> downloaded_site/example.com/index.html
-      - https://example.com/about    -> downloaded_site/example.com/about.html
-      - https://example.com/blog/     -> downloaded_site/example.com/blog/index.html
+      - https://example.com/         -> example_com_index.html
+      - https://example.com/about    -> example_com_about.html
+      - https://example.com/blog/     -> example_com_blog_index.html
     """
     parsed = urlparse(url)
-    domain = parsed.netloc
+    # Replace dots in the domain with underscores
+    domain = parsed.netloc.replace('.', '_')
+    
     path = parsed.path
     if not path or path.endswith('/'):
         path = path + "index.html"
     else:
         if not os.path.splitext(path)[1]:
             path = path + ".html"
-    if path.startswith('/'):
-        path = path[1:]
-    return os.path.join(output_dir, domain, path)
+    # Remove any leading slash and replace remaining slashes with underscores.
+    path = path.lstrip('/').replace('/', '_')
+    # Combine domain and path to form a file name.
+    file_name = f"{domain}_{path}"
+    return os.path.join(output_folder, file_name)
 
-def save_page_with_inlining(browser, url, output_dir):
+def save_page_with_inlining(browser, url, output_folder):
     """
     Opens the given URL in a Playwright page, inlines external resources (CSS and images),
+    bypasses cookie acceptance messages by auto-accepting or removing them,
     and then saves the resulting self-contained HTML to disk.
     """
     print(f"\nProcessing page: {url}")
     page = browser.new_page()
     try:
         page.goto(url, wait_until="networkidle")
-        # Inline external CSS and images via an async IIFE.
+        # Inline external CSS, images, and handle cookie banners via an async IIFE.
         inline_script = """
         (async () => {
+            // Attempt to auto-accept cookies.
+            const cookieSelectors = "#onetrust-accept-btn-handler, .cookie-accept, button.cookie-consent-accept, .cc-btn, .cookie-banner-accept";
+            const cookieBtn = document.querySelector(cookieSelectors);
+            if (cookieBtn) {
+                console.log("Found cookie acceptance button, clicking it.");
+                cookieBtn.click();
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            // Remove any lingering cookie banners.
+            const banners = document.querySelectorAll("[id*='cookie'], [class*='cookie']");
+            banners.forEach(banner => banner.remove());
+            
             // Inline external CSS files.
             const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
             for (const link of links) {
@@ -154,13 +174,12 @@ def save_page_with_inlining(browser, url, output_dir):
             }
         })();
         """
-        print("Inlining external resources …")
+        print("Inlining external resources and handling cookie banners …")
         page.evaluate(inline_script)
-        # Give a moment for inlining to finish.
+        # Give a moment for the script to finish its tasks.
         time.sleep(1)
         content = page.content()
-        file_path = get_file_path(url, output_dir)
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        file_path = get_file_path(url, output_folder)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
         print(f"Saved page to {file_path}")
@@ -176,8 +195,20 @@ def main():
         print("No URL provided. Exiting.")
         return
 
-    # Define the output directory (you can change this as desired).
-    output_dir = "downloaded_site"
+    # Optional: Ask for maximum number of pages to scrape.
+    max_pages_input = input("Enter maximum number of pages to scrape (default 100): ").strip()
+    try:
+        max_pages = int(max_pages_input) if max_pages_input else 100
+    except ValueError:
+        print("Invalid input for maximum pages. Using default value of 100.")
+        max_pages = 100
+
+    # Create a folder for the website using its domain (dots replaced with underscores).
+    parsed_main = urlparse(main_url)
+    domain_folder = parsed_main.netloc.replace('.', '_')
+    output_folder = os.path.join("downloaded_site", domain_folder)
+    os.makedirs(output_folder, exist_ok=True)
+    print(f"All files will be saved in: {output_folder}")
 
     # Discover sitemap URLs.
     sitemap_urls = get_sitemap_urls(main_url)
@@ -192,14 +223,22 @@ def main():
         page_urls = parse_sitemap(sitemap)
         print(f"Found {len(page_urls)} page URLs in sitemap {sitemap}")
         all_page_urls.extend(page_urls)
-    all_page_urls = list(set(all_page_urls))
-    print(f"\nTotal unique pages to download: {len(all_page_urls)}")
+
+    # Remove duplicate URLs while preserving order.
+    unique_page_urls = list(dict.fromkeys(all_page_urls))
+    total_found = len(unique_page_urls)
+    print(f"\nTotal unique pages found: {total_found}")
+
+    # Limit the pages to scrape if needed.
+    if total_found > max_pages:
+        print(f"Limiting pages to the first {max_pages} of {total_found} found.")
+        unique_page_urls = unique_page_urls[:max_pages]
 
     # Use Playwright to open each page, inline its resources, and save it.
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        for url in all_page_urls:
-            save_page_with_inlining(browser, url, output_dir)
+        for url in unique_page_urls:
+            save_page_with_inlining(browser, url, output_folder)
         browser.close()
 
     print("\nScraping complete!")
